@@ -56,11 +56,32 @@ void C3DViewer::update() {
     // Grados por segundo
     float cameraSpeed = 2.5f * 0.016f;
     float rotateSpeed = 100.0f * 0.016f; 
+    // Camara FPS/GOD
+    glm::vec3 moveFront = m_cameraFront;
+    if (m_cameraFPSMode) {
+        // En modo FPS, ignoramos la componente Y para caminar sobre la mesa
+        moveFront.y = 0.0f;
+        // Volvemos a normalizar para mantener la misma velocidad al caminar
+        if (glm::length(moveFront) > 0.001f) {
+            moveFront = glm::normalize(moveFront);
+        }
+    }
+    if (m_isFallingToFPS) {
+        // Interpolación suave. El 0.1f es la velocidad de caida
+        m_cameraPos = glm::mix(m_cameraPos, m_savedFPSPos, 0.05f);
+        // Si ya estamos muy cerca del punto guardado, detenemos la caída
+        if (glm::distance(m_cameraPos, m_savedFPSPos) < 0.05f) {
+            m_cameraPos = m_savedFPSPos; // Aseguramos posición exacta
+            m_isFallingToFPS = false;
+        }
+    }
     // MOVERSE ADELANTE/ATRAS 
-    if (glfwGetKey(m_window, GLFW_KEY_UP) == GLFW_PRESS)
-        m_cameraPos += cameraSpeed * m_cameraFront;
-    if (glfwGetKey(m_window, GLFW_KEY_DOWN) == GLFW_PRESS)
-        m_cameraPos -= cameraSpeed * m_cameraFront;
+    if (!m_isFallingToFPS) {
+        if (glfwGetKey(m_window, GLFW_KEY_UP) == GLFW_PRESS)
+            m_cameraPos += cameraSpeed * moveFront;
+        if (glfwGetKey(m_window, GLFW_KEY_DOWN) == GLFW_PRESS)
+            m_cameraPos -= cameraSpeed * moveFront;
+    }
     // ROTAR VISTA (LEFT/RIGHT) 
     if (glfwGetKey(m_window, GLFW_KEY_LEFT) == GLFW_PRESS)
         m_cameraYaw -= rotateSpeed;
@@ -542,6 +563,27 @@ void C3DViewer::drawInterface() {
         else {
             ImGui::TextWrapped("Haz Clic Izquierdo sobre el objeto 3D para seleccionar una parte y editarla.");
         }
+    }
+    // Interfaz de Cámara
+    if (ImGui::CollapsingHeader("Camara", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Modo de Navegacion:");
+        // Si el usuario selecciona FPS, la variable se vuelve true
+        if (ImGui::RadioButton("FPS (Caminar)", m_cameraFPSMode == true)) {
+            if (!m_cameraFPSMode) {
+                m_cameraFPSMode = true;
+                m_isFallingToFPS = true; 
+            }
+        }
+        ImGui::SameLine();
+        // Si el usuario selecciona GOD, la variable se vuelve false
+        if (ImGui::RadioButton("GOD (Volar)", m_cameraFPSMode == false)) {
+            if (m_cameraFPSMode) {
+                m_savedFPSPos = m_cameraPos;
+                m_cameraFPSMode = false;
+                m_isFallingToFPS = false;
+            }
+        }
+        ImGui::Text("Altura (Y): %.2f", m_cameraPos.y);
     }
     ImGui::End();
     ImGui::Render();

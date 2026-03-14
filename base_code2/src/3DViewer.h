@@ -98,6 +98,10 @@ protected:
     float m_cameraYaw = -90.0f;
     float m_cameraPitch = 0.0f;
     float m_lastFrame = 0.0f;
+    bool m_cameraFPSMode = true;
+    // Guarda dónde estábamos antes de volar
+    glm::vec3 m_savedFPSPos = glm::vec3(0.0f); 
+    bool m_isFallingToFPS = false;
     // Opciones de Visualización
     bool m_showWireframe = false;
     bool m_showNormals = false;
