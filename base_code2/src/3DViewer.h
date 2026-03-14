@@ -13,7 +13,6 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp>
-
 #include "imgui/imgui.h"
 #include "imgui/backends/imgui_impl_glfw.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
@@ -22,6 +21,7 @@ struct Vertex {
     glm::vec3 Position;
     glm::vec3 Normal;
     glm::vec2 TexCoords;
+    glm::vec3 Tangent;
 };
 
 struct SubMesh {
@@ -29,10 +29,20 @@ struct SubMesh {
     std::vector<unsigned int> indices;
     unsigned int indexCount = 0;
     glm::vec3 diffuseColor = glm::vec3(0.7f);
+    // TRANSFORMACIONES LOCALES
     glm::vec3 localPosition = glm::vec3(0.0f);
+    glm::vec3 localScale = glm::vec3(1.0f);
+    glm::quat localRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     bool visible = true;
     glm::vec3 min = glm::vec3(FLT_MAX);
     glm::vec3 max = glm::vec3(-FLT_MAX);
+    GLuint diffuseMap = 0;
+    GLuint specularMap = 0;
+    GLuint ambientMap = 0;
+    //Bump
+    GLuint bumpMap = 0;
+    bool isReflective = false;
+    int uvMappingMode = 0; // 0: OBJ Original, 1: S-Mapping (Esférico), 2: O-Mapping (Cilíndrico)
 };
 
 class C3DViewer {
@@ -43,6 +53,7 @@ public:
     void mainLoop();
     void exportOBJ(const std::string& filename);
     void resetView();
+    void createParametricTable();
 private:
     // Callbacks
     virtual void onKey(int key, int scancode, int action, int mods);
@@ -68,6 +79,8 @@ private:
     static void mouseButtonCallbackStatic(GLFWwindow* window, int button, int action, int mods);
     static void cursorPosCallbackStatic(GLFWwindow* window, double xpos, double ypos);
     void updateNormalBuffers();
+    GLuint loadTexture(const char* path);
+    void computeTangents();
 protected:
     char m_objFileName[128] = "pig.obj";
     int width = 1280;
@@ -121,40 +134,156 @@ protected:
     float m_pointSize = 3.0f; 
     glm::vec3 m_vertexColor = glm::vec3(1.0f, 1.0f, 1.0f); 
     glm::vec3 m_boundingBoxColor = glm::vec3(1.0f, 0.0f, 1.0f); 
+    // Iluminacion
+    struct Light {
+        bool enabled = true;
+        glm::vec3 position;
+        glm::vec3 ambient;
+        glm::vec3 diffuse;
+        glm::vec3 specular;
+        int shadingModel = 0; // 0 = Phong, 1 = Blinn-Phong, 2 = Flat Shading
+        // Datos para su trayectoria
+        float radius;
+        float speedOffset;
+        float height;
+    };
+    Light m_lights[3];
+    float m_lightAnimSpeed = 1.0f;
+    bool m_enableAttenuation = true;
+    // Buffer para dibujar las esferitas de luz
+    GLuint m_vao_sphere = 0, m_vbo_sphere = 0, m_ebo_sphere = 0;
+    int m_sphereIndexCount = 0;
+    void setupSphereBuffer();
+    void drawLightSphere(const glm::vec3& pos, const glm::vec3& color);
+    char m_texDiffuseInput[128] = "madera_difusa.jpg";
+    char m_texBumpInput[128] = "madera_bump.jpg";
+    // Variables del Skybox 
+    GLuint m_skyboxVAO = 0, m_skyboxVBO = 0;
+    GLuint m_cubemapTexture = 0;
+    GLuint m_skyboxShader = 0;
+    void setupSkybox();
+    GLuint loadCubemap(std::vector<std::string> faces);
     // Shaders Sources
     const char* vertexShaderSrc = R"glsl(
         #version 330 core
         layout(location = 0) in vec3 aPos;
         layout(location = 1) in vec3 aNormal;
-        uniform mat4 model;
-        uniform mat4 view;
-        uniform mat4 projection;
-        out vec3 vNormal;
-        out vec3 vFragPos;
+        layout(location = 2) in vec2 aTexCoords;
+        layout(location = 3) in vec3 aTangent;
+        uniform mat4 model; uniform mat4 view; uniform mat4 projection;
+        out vec3 vFragPos; out vec2 vTexCoords; out vec3 vNormal; out mat3 vTBN; 
+        out vec3 vLocalPos; // Para el mapeo Esférico/Cilíndrico
         void main() {
+            vLocalPos = aPos; 
             vFragPos = vec3(model * vec4(aPos, 1.0));
-            vNormal = mat3(transpose(inverse(model))) * aNormal; 
+            vTexCoords = aTexCoords;
+            mat3 normalMatrix = mat3(transpose(inverse(model)));
+            vec3 T = normalize(normalMatrix * aTangent);
+            vec3 N = normalize(normalMatrix * aNormal);
+            T = normalize(T - dot(T, N) * N); 
+            vec3 B = cross(T, N); 
+            vTBN = mat3(T, B, N); vNormal = N;
             gl_Position = projection * view * vec4(vFragPos, 1.0);
         }
     )glsl";
     const char* fragmentShaderSrc = R"glsl(
         #version 330 core
-        in vec3 vNormal;
-        in vec3 vFragPos;
-        uniform vec3 uColor;
-        uniform bool isPicking;
-        uniform bool useFlatColor; 
+        in vec3 vFragPos; in vec2 vTexCoords; in vec3 vNormal; in mat3 vTBN; in vec3 vLocalPos;
+        struct Light { 
+            bool enabled; 
+            vec3 position; 
+            vec3 ambient; 
+            vec3 diffuse; 
+            vec3 specular; 
+            int shadingModel; 
+        };
+        uniform Light lights[3]; uniform vec3 viewPos; uniform vec3 uColor; 
+        uniform bool useFlatColor; uniform bool useAttenuation; uniform bool isPicking;
+        uniform sampler2D mapDiffuse; uniform sampler2D mapSpecular; 
+        uniform sampler2D mapAmbient; uniform sampler2D mapBump;
+        uniform samplerCube skybox; // El mapa del entorno para el reflejo
+        uniform bool hasMapDiffuse; uniform bool hasMapSpecular; 
+        uniform bool hasMapAmbient; uniform bool hasMapBump;
+        uniform int uvMappingMode; // 0=OBJ, 1=Esferico, 2=Cilindrico
+        uniform bool isReflective; // True = Bronce brillante
         out vec4 FragColor;
         void main() {
-            if (isPicking || useFlatColor) {
-                FragColor = vec4(uColor, 1.0);
-            } else {
-                vec3 norm = normalize(vNormal);
-                vec3 lightDir = normalize(vec3(0.2, 0.5, 0.8));
-                float diff = max(dot(norm, lightDir), 0.3); 
-                vec3 diffuse = diff * uColor;
-                FragColor = vec4(diffuse, 1.0);
+            if (isPicking || useFlatColor) { FragColor = vec4(uColor, 1.0); return; }
+            vec3 result = vec3(0.0);
+            vec3 viewDir = normalize(viewPos - vFragPos);
+            vec2 finalUV = vTexCoords;
+            if (uvMappingMode == 1) { 
+                // S-Mapping 1: Esférico
+                vec3 p = normalize(vLocalPos);
+                finalUV = vec2(atan(p.z, p.x) / 6.2831853 + 0.5, asin(p.y) / 3.14159265 + 0.5);
+            } 
+            else if (uvMappingMode == 2) { 
+                // S-Mapping 2: Plano XY (Proyección ortogonal)
+                finalUV = vLocalPos.xy * 0.5 + 0.5;
+            } 
+            else if (uvMappingMode == 3) { 
+                // O-Mapping 1: Cilíndrico
+                vec3 p = normalize(vLocalPos);
+                finalUV = vec2(atan(p.z, p.x) / 6.2831853 + 0.5, vLocalPos.y * 0.5 + 0.5);
+            } 
+            else if (uvMappingMode == 4) { 
+                // O-Mapping 2: Mapeo por Normales (El entorno influye en la textura)
+                finalUV = normalize(vNormal).xy * 0.5 + 0.5;
             }
+            vec3 texDiffuse = hasMapDiffuse ? texture(mapDiffuse, finalUV).rgb : uColor;
+            vec3 texSpecular = hasMapSpecular ? texture(mapSpecular, finalUV).rgb : vec3(1.0);
+            vec3 texAmbient = hasMapAmbient ? texture(mapAmbient, finalUV).rgb : texDiffuse;
+            vec3 norm = normalize(vNormal);
+            if (hasMapBump && uvMappingMode == 0) { // Bump solo si usa UVs originales
+                norm = normalize(vTBN * normalize(texture(mapBump, finalUV).rgb * 2.0 - 1.0));
+            }
+            for(int i = 0; i < 3; i++) {
+                if(!lights[i].enabled) continue;
+                if (lights[i].shadingModel == 2) { 
+                    norm = normalize(cross(dFdx(vFragPos), dFdy(vFragPos)));
+                }
+                vec3 lightDir = normalize(lights[i].position - vFragPos);
+                vec3 ambient = lights[i].ambient * texAmbient;
+                float diff = max(dot(norm, lightDir), 0.0);
+                vec3 diffuse = lights[i].diffuse * diff * texDiffuse;
+                float spec = 0.0;
+                if (lights[i].shadingModel == 1) { 
+                    spec = pow(max(dot(norm, normalize(lightDir + viewDir)), 0.0), 32.0);
+                } else { 
+                    spec = pow(max(dot(viewDir, reflect(-lightDir, norm)), 0.0), 32.0);
+                }
+                vec3 specular = lights[i].specular * spec * texSpecular; 
+                float dist = length(lights[i].position - vFragPos);
+                float att = useAttenuation ? 1.0 / (1.0 + 0.09 * dist + 0.032 * (dist * dist)) : 1.0;
+                result += (ambient + diffuse + specular) * att;
+            }
+            if (isReflective) {
+                vec3 R = reflect(-viewDir, normalize(vNormal));
+                vec3 reflection = texture(skybox, R).rgb;
+                result = mix(result, reflection * vec3(1.0, 0.7, 0.3), 0.6); 
+            }
+            FragColor = vec4(result, 1.0);
+        }
+    )glsl";
+    // SHADERS DEL SKYBOX
+    const char* skyboxVertexShaderSrc = R"glsl(
+        #version 330 core
+        layout (location = 0) in vec3 aPos;
+        out vec3 TexCoords;
+        uniform mat4 projection; uniform mat4 view;
+        void main() {
+            TexCoords = aPos;
+            vec4 pos = projection * view * vec4(aPos, 1.0);
+            gl_Position = pos.xyww;
+        }
+    )glsl";
+    const char* skyboxFragmentShaderSrc = R"glsl(
+        #version 330 core
+        out vec4 FragColor;
+        in vec3 TexCoords;
+        uniform samplerCube skybox;
+        void main() {    
+            FragColor = texture(skybox, TexCoords);
         }
     )glsl";
 };

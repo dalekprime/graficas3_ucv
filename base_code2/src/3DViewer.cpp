@@ -2,6 +2,8 @@
 #include <iostream>
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #include <glm/gtc/type_ptr.hpp> 
 
 C3DViewer::C3DViewer() {}
@@ -22,7 +24,7 @@ bool C3DViewer::setup() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    m_window = glfwCreateWindow(width, height, "Proyecto 2 - Grafica", NULL, NULL);
+    m_window = glfwCreateWindow(width, height, "Proyecto 3 - Grafica", NULL, NULL);
     if (!m_window) { glfwTerminate(); return false; }
     glfwMakeContextCurrent(m_window);
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return false;
@@ -30,6 +32,7 @@ bool C3DViewer::setup() {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glEnable(GL_LINE_SMOOTH);
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
     // ImGui Setup
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -49,6 +52,26 @@ bool C3DViewer::setup() {
     glfwSetKeyCallback(m_window, keyCallbackStatic);
     glfwSetMouseButtonCallback(m_window, mouseButtonCallbackStatic);
     glfwSetCursorPosCallback(m_window, cursorPosCallbackStatic);
+    // Inicializar Luces 
+    // LUZ 0: ROJA
+    m_lights[0].diffuse = glm::vec3(1.0f, 50.0f / 255.0f, 25.0f / 255.0f);
+    m_lights[0].ambient = m_lights[0].diffuse * 0.2f;
+    m_lights[0].specular = glm::vec3(1.0f);
+    m_lights[0].radius = 4.0f; m_lights[0].height = 2.0f; m_lights[0].speedOffset = 0.0f;
+    // LUZ 1: VERDE
+    m_lights[1].diffuse = glm::vec3(50.0f / 255.0f, 1.0f, 25.0f / 255.0f);
+    m_lights[1].ambient = m_lights[1].diffuse * 0.2f;
+    m_lights[1].specular = glm::vec3(1.0f);
+    m_lights[1].radius = 5.5f; m_lights[1].height = 3.5f; m_lights[1].speedOffset = 2.09f; 
+    // LUZ 2: AZUL
+    m_lights[2].diffuse = glm::vec3(25.0f / 255.0f, 50.0f / 255.0f, 1.0f);
+    m_lights[2].ambient = m_lights[2].diffuse * 0.2f;
+    m_lights[2].specular = glm::vec3(1.0f);
+    m_lights[2].radius = 3.0f; m_lights[2].height = 1.0f; m_lights[2].speedOffset = 4.18f;
+    // Crear la geometría de la esferita
+    setupSphereBuffer();
+    setupSkybox();
+    createParametricTable();
     return true;
 }
 
@@ -93,6 +116,14 @@ void C3DViewer::update() {
     front.y = sin(glm::radians(m_cameraPitch));
     front.z = sin(glm::radians(m_cameraYaw)) * cos(glm::radians(m_cameraPitch));
     m_cameraFront = glm::normalize(front);
+    // Animacion de Luces
+    float time = glfwGetTime() * m_lightAnimSpeed;
+    for (int i = 0; i < 3; i++) {
+        // Trayectoria armoniosa tipo luciérnaga (Seno y Coseno)
+        m_lights[i].position.x = cos(time + m_lights[i].speedOffset) * m_lights[i].radius;
+        m_lights[i].position.y = m_lights[i].height + sin(time * 0.5f + m_lights[i].speedOffset) * 1.5f; // Sube y baja suavemente
+        m_lights[i].position.z = sin(time + m_lights[i].speedOffset) * m_lights[i].radius;
+    }
 }
 
 void C3DViewer::mainLoop() {
@@ -122,26 +153,31 @@ void C3DViewer::onMouseButton(int button, int action, int mods) {
         glfwGetCursorPos(m_window, &x, &y);
         lastMouseX = x; lastMouseY = y;
         if (button == GLFW_MOUSE_BUTTON_LEFT) {
-            bool forceRotation = (glfwGetKey(m_window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS);
-            int picked = pickObject(x, y);
-            if (forceRotation) {
-                m_selectedSubMeshIndex = -1;
-                m_showBoundingBox = false;
-                isDragging = true;
-            }
-            else {
+            //Picking Desactivado
+            /*
+                bool forceRotation = (glfwGetKey(m_window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS);
                 int picked = pickObject(x, y);
-                if (picked != -1) {
-                    m_selectedSubMeshIndex = picked;
-                    m_showBoundingBox = true;
-                    isDragging = false;
-                }
-                else {
+                if (forceRotation) {
                     m_selectedSubMeshIndex = -1;
                     m_showBoundingBox = false;
                     isDragging = true;
                 }
-            }
+                else {
+                    int picked = pickObject(x, y);
+                    if (picked != -1) {
+                        m_selectedSubMeshIndex = picked;
+                        m_showBoundingBox = true;
+                        isDragging = false;
+                    }
+                    else {
+                        m_selectedSubMeshIndex = -1;
+                        m_showBoundingBox = false;
+                        isDragging = true;
+                    }
+                }
+            */
+			//Desactivada la rotacion global
+            //isDragging = true;
         }
     }
     else if (action == GLFW_RELEASE) {
@@ -212,11 +248,20 @@ bool C3DViewer::loadOBJ(const std::string& filename) {
             if (!shape.mesh.material_ids.empty() && shape.mesh.material_ids[0] >= 0) {
                 int matId = shape.mesh.material_ids[0];
                 if (matId < materials.size()) {
-                    subMesh.diffuseColor = glm::vec3(
-                        materials[matId].diffuse[0],
-                        materials[matId].diffuse[1],
-                        materials[matId].diffuse[2]
-                    );
+                    subMesh.diffuseColor = glm::vec3(materials[matId].diffuse[0], materials[matId].diffuse[1], materials[matId].diffuse[2]);
+                    // Cargar Texturas usando baseDir
+                    if (!materials[matId].diffuse_texname.empty()) {
+                        std::string texPath = baseDir + materials[matId].diffuse_texname;
+                        subMesh.diffuseMap = loadTexture(texPath.c_str());
+                    }
+                    if (!materials[matId].specular_texname.empty()) {
+                        std::string texPath = baseDir + materials[matId].specular_texname;
+                        subMesh.specularMap = loadTexture(texPath.c_str());
+                    }
+                    if (!materials[matId].ambient_texname.empty()) {
+                        std::string texPath = baseDir + materials[matId].ambient_texname;
+                        subMesh.ambientMap = loadTexture(texPath.c_str());
+                    }
                 }
             }
             else {
@@ -252,6 +297,7 @@ bool C3DViewer::loadOBJ(const std::string& filename) {
             else {
                 vertex.TexCoords = glm::vec2(0.0f);
             }
+            vertex.Tangent = glm::vec3(0.0f);
             m_vertices.push_back(vertex);
             subMesh.indices.push_back(m_vertices.size() - 1);
         }
@@ -260,7 +306,9 @@ bool C3DViewer::loadOBJ(const std::string& filename) {
     }
     calculateBoundingBox();
     computeNormals();
-    setupMeshBuffers();
+    computeTangents();
+    createParametricTable();
+    //setupMeshBuffers();
     updateNormalBuffers();
     resetView();
     return true;
@@ -318,6 +366,12 @@ void C3DViewer::setupMeshBuffers() {
     // Location 1: Normal
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
     glEnableVertexAttribArray(1);
+    // Location 2: TexCoords
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
+    glEnableVertexAttribArray(2);
+    // Location 3: Tangent 
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Tangent));
+    glEnableVertexAttribArray(3);
     glBindVertexArray(0);
 }
 
@@ -387,6 +441,22 @@ void C3DViewer::render() {
     glUniformMatrix4fv(glGetUniformLocation(m_shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
     glUniform1i(glGetUniformLocation(m_shaderProgram, "isPicking"), 0);
     glUniform1i(glGetUniformLocation(m_shaderProgram, "useFlatColor"), 0);
+    // Enviar Iluminacion
+    glUniform3fv(glGetUniformLocation(m_shaderProgram, "viewPos"), 1, glm::value_ptr(m_cameraPos));
+    glUniform1i(glGetUniformLocation(m_shaderProgram, "useAttenuation"), m_enableAttenuation);
+    for (int i = 0; i < 3; i++) {
+        std::string prefix = "lights[" + std::to_string(i) + "].";
+        glUniform1i(glGetUniformLocation(m_shaderProgram, (prefix + "enabled").c_str()), m_lights[i].enabled);
+        glUniform3fv(glGetUniformLocation(m_shaderProgram, (prefix + "position").c_str()), 1, glm::value_ptr(m_lights[i].position));
+        glUniform3fv(glGetUniformLocation(m_shaderProgram, (prefix + "ambient").c_str()), 1, glm::value_ptr(m_lights[i].ambient));
+        glUniform3fv(glGetUniformLocation(m_shaderProgram, (prefix + "diffuse").c_str()), 1, glm::value_ptr(m_lights[i].diffuse));
+        glUniform3fv(glGetUniformLocation(m_shaderProgram, (prefix + "specular").c_str()), 1, glm::value_ptr(m_lights[i].specular));
+        glUniform1i(glGetUniformLocation(m_shaderProgram, (prefix + "shadingModel").c_str()), m_lights[i].shadingModel);
+        // Dibujar físicamente la esferita de luz en su posición actual
+        if (m_lights[i].enabled) {
+            drawLightSphere(m_lights[i].position, m_lights[i].diffuse);
+        }
+    }
     //glBindVertexArray(m_vao);
     unsigned int offset = 0;
     // SubMesh
@@ -394,14 +464,55 @@ void C3DViewer::render() {
         glBindVertexArray(m_vao);
         SubMesh& sub = m_subMeshes[i];
         if (!sub.visible) { offset += sub.indices.size(); continue; }
-        glm::mat4 localModel = globalModel;
+        glm::mat4 localModel;
+        if (sub.name == "Mesa_Madera") {
+            localModel = glm::mat4(1.0f); // La mesa se queda completamente quieta
+        }
+        else {
+            localModel = globalModel;
+            // Aplicar animación al objeto
+            localModel = glm::translate(localModel, sub.localPosition);
+            localModel = localModel * glm::toMat4(sub.localRotation);
+            localModel = glm::scale(localModel, sub.localScale);
+        }
         localModel = glm::translate(localModel, sub.localPosition);
         glUniformMatrix4fv(glGetUniformLocation(m_shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(localModel));
+        glUniform1i(glGetUniformLocation(m_shaderProgram, "uvMappingMode"), sub.uvMappingMode);
+        glUniform1i(glGetUniformLocation(m_shaderProgram, "isReflective"), sub.isReflective);
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);
+        glUniform1i(glGetUniformLocation(m_shaderProgram, "skybox"), 4);
         // Color
         glm::vec3 color = sub.diffuseColor;
         // Resaltar selección 
         //if (i == m_selectedSubMeshIndex && !m_showWireframe) color = glm::vec3(1.0f, 0.2f, 0.2f);
         glUniform3fv(glGetUniformLocation(m_shaderProgram, "uColor"), 1, glm::value_ptr(color));
+        // Configurar texturas activas
+        glUniform1i(glGetUniformLocation(m_shaderProgram, "hasMapDiffuse"), sub.diffuseMap != 0);
+        //Bump
+        glUniform1i(glGetUniformLocation(m_shaderProgram, "hasMapBump"), sub.bumpMap != 0);
+        if (sub.bumpMap != 0) {
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, sub.bumpMap);
+            glUniform1i(glGetUniformLocation(m_shaderProgram, "mapBump"), 3);
+        }
+        if (sub.diffuseMap != 0) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, sub.diffuseMap);
+            glUniform1i(glGetUniformLocation(m_shaderProgram, "mapDiffuse"), 0);
+        }
+        glUniform1i(glGetUniformLocation(m_shaderProgram, "hasMapSpecular"), sub.specularMap != 0);
+        if (sub.specularMap != 0) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, sub.specularMap);
+            glUniform1i(glGetUniformLocation(m_shaderProgram, "mapSpecular"), 1);
+        }
+        glUniform1i(glGetUniformLocation(m_shaderProgram, "hasMapAmbient"), sub.ambientMap != 0);
+        if (sub.ambientMap != 0) {
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, sub.ambientMap);
+            glUniform1i(glGetUniformLocation(m_shaderProgram, "mapAmbient"), 2);
+        }
         // Dibujar Relleno
         if (m_showTriangles) {
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -445,6 +556,18 @@ void C3DViewer::render() {
         offset += sub.indices.size();
     }
     glBindVertexArray(0);
+    glDepthFunc(GL_LEQUAL);
+    glUseProgram(m_skyboxShader);
+    glm::mat4 skyView = glm::mat4(glm::mat3(view));
+    glUniformMatrix4fv(glGetUniformLocation(m_skyboxShader, "view"), 1, GL_FALSE, glm::value_ptr(skyView));
+    glUniformMatrix4fv(glGetUniformLocation(m_skyboxShader, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    glUniform1i(glGetUniformLocation(m_skyboxShader, "skybox"), 0);
+    glBindVertexArray(m_skyboxVAO);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, m_cubemapTexture);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    glBindVertexArray(0);
+    glDepthFunc(GL_LESS);
     drawInterface();
 }
 void C3DViewer::drawInterface() {
@@ -454,7 +577,7 @@ void C3DViewer::drawInterface() {
     ImGui::NewFrame();
     // Configuración de la Ventana Principal
     ImGui::SetNextWindowSize(ImVec2(350, 500), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Panel de Control - Proyecto 2 UCV");
+    ImGui::Begin("Panel de Control - Proyecto 3 UCV");
     if (ImGui::CollapsingHeader("Cargar Modelo", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::InputText("Archivo (.obj)", m_objFileName, sizeof(m_objFileName));
         // Botón de Cargar
@@ -477,12 +600,12 @@ void C3DViewer::drawInterface() {
     ImGui::Separator();
     //  SISTEMA Y ESTADÍSTICAS 
     ImGui::Text("Rendimiento: %.1f FPS", ImGui::GetIO().Framerate);
-    ImGui::ColorEdit3("Color de Fondo", glm::value_ptr(m_bgColor));
+    //ImGui::ColorEdit3("Color de Fondo", glm::value_ptr(m_bgColor));
     ImGui::Separator();
     // TRANSFORMACIONES GLOBALES 
     if (ImGui::CollapsingHeader("Transformacion Global", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::DragFloat3("Posicion Mundo", glm::value_ptr(m_globalPos), 0.05f);
-        ImGui::DragFloat3("Escala (XYZ)", glm::value_ptr(m_globalScale), 0.01f, 0.01f, 100.0f);
+        //ImGui::DragFloat3("Posicion Mundo", glm::value_ptr(m_globalPos), 0.05f);
+        //ImGui::DragFloat3("Escala (XYZ)", glm::value_ptr(m_globalScale), 0.01f, 0.01f, 100.0f);
         if (ImGui::Button("CENTRAR VISTA Y OBJETO")) {
             resetView();
         }
@@ -491,14 +614,64 @@ void C3DViewer::drawInterface() {
             m_globalRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
             m_globalScale = glm::vec3(1.0f);
         }
+        /*
         ImGui::Separator();
         static char exportName[128] = "modelo_exportado.obj";
         ImGui::InputText("Archivo de Salida", exportName, sizeof(exportName));
         if (ImGui::Button("Exportar OBJ")) {
             exportOBJ(exportName);
         }
-        ImGui::Separator();
+        */
     }
+    //Opciones de Iluminacion
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Iluminacion")) {
+        ImGui::Checkbox("Activar Atenuacion (f_att)", &m_enableAttenuation);
+        ImGui::SliderFloat("Velocidad de Animacion", &m_lightAnimSpeed, 0.0f, 5.0f);
+        ImGui::Separator();
+
+        const char* lightNames[3] = { "Luz 1 (Roja)", "Luz 2 (Verde)", "Luz 3 (Azul)" };
+        const char* shadingModels[3] = { "Phong", "Blinn-Phong", "Flat Shading" };
+
+        for (int i = 0; i < 3; i++) {
+            ImGui::PushID(i); // Para que ImGui no mezcle los botones de diferentes luces
+            if (ImGui::TreeNode(lightNames[i])) {
+                ImGui::Checkbox("Encendida", &m_lights[i].enabled);
+                ImGui::Combo("Modelo", &m_lights[i].shadingModel, shadingModels, 3);
+
+                ImGui::ColorEdit3("Difuso (RGB)", glm::value_ptr(m_lights[i].diffuse));
+                ImGui::ColorEdit3("Ambiente (RGB)", glm::value_ptr(m_lights[i].ambient));
+                ImGui::ColorEdit3("Especular (RGB)", glm::value_ptr(m_lights[i].specular));
+
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Mapeo y Reflejos", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!m_subMeshes.empty()) {
+            // Llenar la lista con los nombres
+            std::vector<const char*> names;
+            for (const auto& s : m_subMeshes) names.push_back(s.name.c_str());
+            // Selector "Group Box" 
+            ImGui::Combo("Seleccionar Parte", &m_selectedSubMeshIndex, names.data(), names.size());
+            if (m_selectedSubMeshIndex >= 0 && m_selectedSubMeshIndex < m_subMeshes.size()) {
+                SubMesh& sub = m_subMeshes[m_selectedSubMeshIndex];
+                ImGui::Separator();
+                const char* mapModes[] = {
+                    "0: UVs Originales (OBJ)",
+                    "1: S-Mapping (Esferico)",
+                    "2: S-Mapping (Plano XY)",
+                    "3: O-Mapping (Cilindrico)",
+                    "4: O-Mapping (Normales)"
+                };
+                ImGui::Combo("Generacion UVs", &sub.uvMappingMode, mapModes, 5);
+                ImGui::Checkbox("Material Reflectivo (Bronce)", &sub.isReflective);
+            }
+        }
+    }
+    ImGui::Separator();
     // OPCIONES DE RENDERIZADO GLOBAL 
     if (ImGui::CollapsingHeader("Opciones de Visualizacion")) {
         // Relleno y Optimizaciones
@@ -557,6 +730,20 @@ void C3DViewer::drawInterface() {
             if (ImGui::Button("ELIMINAR SUB-MALLADO", ImVec2(-1, 0))) { 
                 sub.visible = false;         
                 m_selectedSubMeshIndex = -1;
+            }
+            //Control de Bump
+            ImGui::Separator();
+            ImGui::Text("Texturas Personalizadas (Punto B)");
+            ImGui::InputText("Difusa (.jpg/.png)", m_texDiffuseInput, sizeof(m_texDiffuseInput));
+            if (ImGui::Button("Cargar Difusa")) {
+                std::string full = "objetos3D/" + std::string(m_texDiffuseInput);
+                sub.diffuseMap = loadTexture(full.c_str());
+            }
+
+            ImGui::InputText("Bump Map (.jpg/.png)", m_texBumpInput, sizeof(m_texBumpInput));
+            if (ImGui::Button("Cargar Bump Map")) {
+                std::string full = "objetos3D/" + std::string(m_texBumpInput);
+                sub.bumpMap = loadTexture(full.c_str());
             }
             ImGui::PopStyleColor(3);
         }
@@ -748,8 +935,8 @@ void C3DViewer::resetView() {
 void C3DViewer::exportOBJ(const std::string& filename) {
     std::string mtlFilename = filename.substr(0, filename.find_last_of('.')) + ".mtl";
     std::string mtlNameOnly = mtlFilename.substr(mtlFilename.find_last_of("/\\") + 1);
-    std::ofstream outObj(filename);
-    std::ofstream outMtl(mtlFilename);
+    std::ofstream outObj("objetos3D/" + filename);
+    std::ofstream outMtl("objetos3D/" + mtlFilename);
     if (!outObj.is_open() || !outMtl.is_open()) return;
     outObj << "# Exportado por C3DViewer\n";
     outObj << "mtllib " << mtlNameOnly << "\n";
@@ -794,4 +981,231 @@ void C3DViewer::exportOBJ(const std::string& filename) {
         vertexOffset += count;
     }
     std::cout << "Exportado correctamente con normales." << std::endl;
+}
+//Iluminacion
+// Generador trigonométrico de esfera (Longitud/Latitud)
+void C3DViewer::setupSphereBuffer() {
+    std::vector<float> vertices;
+    std::vector<unsigned int> indices;
+    int sectors = 15;
+    int stacks = 15;
+    float radius = 0.2f;
+    for (int i = 0; i <= stacks; ++i) {
+        float V = i / (float)stacks;
+        float phi = V * glm::pi<float>();
+        for (int j = 0; j <= sectors; ++j) {
+            float U = j / (float)sectors;
+            float theta = U * (glm::pi<float>() * 2.0f);
+            float x = cos(theta) * sin(phi);
+            float y = cos(phi);
+            float z = sin(theta) * sin(phi);
+            vertices.push_back(x * radius);
+            vertices.push_back(y * radius);
+            vertices.push_back(z * radius);
+        }
+    }
+    for (int i = 0; i < stacks; ++i) {
+        for (int j = 0; j < sectors; ++j) {
+            int first = (i * (sectors + 1)) + j;
+            int second = first + sectors + 1;
+            indices.push_back(first); indices.push_back(second); indices.push_back(first + 1);
+            indices.push_back(second); indices.push_back(second + 1); indices.push_back(first + 1);
+        }
+    }
+    m_sphereIndexCount = indices.size();
+    glGenVertexArrays(1, &m_vao_sphere);
+    glGenBuffers(1, &m_vbo_sphere);
+    glGenBuffers(1, &m_ebo_sphere);
+    glBindVertexArray(m_vao_sphere);
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo_sphere);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo_sphere);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+}
+
+void C3DViewer::drawLightSphere(const glm::vec3& pos, const glm::vec3& color) {
+    if (m_vao_sphere == 0) return;
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), pos);
+    glUniformMatrix4fv(glGetUniformLocation(m_shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+    glUniform1i(glGetUniformLocation(m_shaderProgram, "useFlatColor"), 1);
+    glUniform3fv(glGetUniformLocation(m_shaderProgram, "uColor"), 1, glm::value_ptr(color)); // Color de su luz
+    glBindVertexArray(m_vao_sphere);
+    glDrawElements(GL_TRIANGLES, m_sphereIndexCount, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
+    glUniform1i(glGetUniformLocation(m_shaderProgram, "useFlatColor"), 0);
+}
+
+// Texturas
+GLuint C3DViewer::loadTexture(const char* path) {
+    GLuint textureID;
+    glGenTextures(1, &textureID);
+    int width, height, nrComponents;
+    stbi_set_flip_vertically_on_load(true);
+    unsigned char* data = stbi_load(path, &width, &height, &nrComponents, 0);
+    if (data) {
+        GLenum format = (nrComponents == 4) ? GL_RGBA : GL_RGB;
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        stbi_image_free(data);
+        std::cout << "Textura cargada: " << path << std::endl;
+    }
+    else {
+        std::cout << "Error al cargar textura: " << path << std::endl;
+        stbi_image_free(data);
+        return 0;
+    }
+    return textureID;
+}
+
+void C3DViewer::createParametricTable() {
+    SubMesh tableMesh;
+    tableMesh.name = "Mesa_Madera";
+    int resolution = 50;
+    float size = 40.0f;
+    // Generar Vértices Paramétricos (Aplanados para glDrawArrays)
+    for (int i = 0; i < resolution; ++i) {
+        for (int j = 0; j < resolution; ++j) {
+            float u0 = (float)j / resolution;
+            float v0 = (float)i / resolution;
+            float u1 = (float)(j + 1) / resolution;
+            float v1 = (float)(i + 1) / resolution;
+            Vertex p1, p2, p3, p4;
+            // Coordenadas Espaciales
+            p1.Position = glm::vec3((u0 - 0.5f) * size, -1.0f, (v0 - 0.5f) * size);
+            p2.Position = glm::vec3((u1 - 0.5f) * size, -1.0f, (v0 - 0.5f) * size);
+            p3.Position = glm::vec3((u0 - 0.5f) * size, -1.0f, (v1 - 0.5f) * size);
+            p4.Position = glm::vec3((u1 - 0.5f) * size, -1.0f, (v1 - 0.5f) * size);
+            // Normales y Tangentes apuntando correctamente
+            glm::vec3 normal(0.0f, 1.0f, 0.0f);
+            glm::vec3 tangent(1.0f, 0.0f, 0.0f);
+            p1.Normal = p2.Normal = p3.Normal = p4.Normal = normal;
+            p1.Tangent = p2.Tangent = p3.Tangent = p4.Tangent = tangent;
+            // Coordenadas de Textura (UVs)
+            p1.TexCoords = glm::vec2(u0 * 10.0f, v0 * 10.0f);
+            p2.TexCoords = glm::vec2(u1 * 10.0f, v0 * 10.0f);
+            p3.TexCoords = glm::vec2(u0 * 10.0f, v1 * 10.0f);
+            p4.TexCoords = glm::vec2(u1 * 10.0f, v1 * 10.0f);
+            // Definir los 2 triángulos (6 vértices)
+            Vertex quad[6] = { p1, p3, p2, p2, p3, p4 };
+            for (int k = 0; k < 6; k++) {
+                tableMesh.min = glm::min(tableMesh.min, quad[k].Position);
+                tableMesh.max = glm::max(tableMesh.max, quad[k].Position);
+                m_vertices.push_back(quad[k]);
+                tableMesh.indices.push_back(m_vertices.size() - 1);
+            }
+        }
+    }
+    tableMesh.diffuseColor = glm::vec3(0.5f, 0.3f, 0.1f);
+    // Cargar texturas automáticamente
+    std::string diffPath = "objetos3D/" + std::string(m_texDiffuseInput);
+    std::string bumpPath = "objetos3D/" + std::string(m_texBumpInput);
+    std::cout << "Cargando texturas de la mesa por defecto..." << std::endl;
+    tableMesh.diffuseMap = loadTexture(diffPath.c_str());
+    tableMesh.bumpMap = loadTexture(bumpPath.c_str());
+    tableMesh.indexCount = tableMesh.indices.size();
+    m_subMeshes.push_back(tableMesh);
+    // Recargar buffers a la GPU
+    setupMeshBuffers();
+    std::cout << "Mesa Parametrica generada." << std::endl;
+}
+
+// Correccion de Bump
+void C3DViewer::computeTangents() {
+    if (m_vertices.empty()) return;
+    for (size_t i = 0; i < m_vertices.size(); i += 3) {
+        if (i + 2 >= m_vertices.size()) break;
+        Vertex& v0 = m_vertices[i];
+        Vertex& v1 = m_vertices[i + 1];
+        Vertex& v2 = m_vertices[i + 2];
+        // Calcular los bordes del triángulo
+        glm::vec3 edge1 = v1.Position - v0.Position;
+        glm::vec3 edge2 = v2.Position - v0.Position;
+        // Calcular la diferencia en las coordenadas UV
+        glm::vec2 deltaUV1 = v1.TexCoords - v0.TexCoords;
+        glm::vec2 deltaUV2 = v2.TexCoords - v0.TexCoords;
+        float determinant = (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+        glm::vec3 tangent;
+        // Evitar división por cero si el OBJ no tiene buenas coordenadas UV
+        if (abs(determinant) < 0.0001f) {
+            tangent = glm::vec3(1.0f, 0.0f, 0.0f); // Tangente segura por defecto
+        }
+        else {
+            float f = 1.0f / determinant;
+            tangent.x = f * (deltaUV2.y * edge1.x - deltaUV1.y * edge2.x);
+            tangent.y = f * (deltaUV2.y * edge1.y - deltaUV1.y * edge2.y);
+            tangent.z = f * (deltaUV2.y * edge1.z - deltaUV1.y * edge2.z);
+            tangent = glm::normalize(tangent);
+        }
+        v0.Tangent = tangent;
+        v1.Tangent = tangent;
+        v2.Tangent = tangent;
+    }
+}
+//Skybox
+GLuint C3DViewer::loadCubemap(std::vector<std::string> faces) {
+    GLuint textureID;
+    glGenTextures(1, &textureID);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
+    int width, height, nrChannels;
+    stbi_set_flip_vertically_on_load(false);
+    for (unsigned int i = 0; i < faces.size(); i++) {
+        unsigned char* data = stbi_load(faces[i].c_str(), &width, &height, &nrChannels, 0);
+        if (data) {
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+            stbi_image_free(data);
+        }
+        else {
+            std::cout << "Error cargando cara del cubemap: " << faces[i] << std::endl;
+            stbi_image_free(data);
+        }
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    return textureID;
+}
+
+void C3DViewer::setupSkybox() {
+    float skyboxVertices[] = {
+        // positions          
+        -1.0f,  1.0f, -1.0f,  -1.0f, -1.0f, -1.0f,   1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,   1.0f,  1.0f, -1.0f,  -1.0f,  1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,  -1.0f, -1.0f, -1.0f,  -1.0f,  1.0f, -1.0f,
+        -1.0f,  1.0f, -1.0f,  -1.0f,  1.0f,  1.0f,  -1.0f, -1.0f,  1.0f,
+         1.0f, -1.0f, -1.0f,   1.0f, -1.0f,  1.0f,   1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,   1.0f,  1.0f, -1.0f,   1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,  -1.0f,  1.0f,  1.0f,   1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,   1.0f, -1.0f,  1.0f,  -1.0f, -1.0f,  1.0f,
+        -1.0f,  1.0f, -1.0f,   1.0f,  1.0f, -1.0f,   1.0f,  1.0f,  1.0f,
+         1.0f,  1.0f,  1.0f,  -1.0f,  1.0f,  1.0f,  -1.0f,  1.0f, -1.0f,
+        -1.0f, -1.0f, -1.0f,  -1.0f, -1.0f,  1.0f,   1.0f, -1.0f, -1.0f,
+         1.0f, -1.0f, -1.0f,  -1.0f, -1.0f,  1.0f,   1.0f, -1.0f,  1.0f
+    };
+    glGenVertexArrays(1, &m_skyboxVAO);
+    glGenBuffers(1, &m_skyboxVBO);
+    glBindVertexArray(m_skyboxVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, m_skyboxVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), &skyboxVertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    std::vector<std::string> faces = {
+        "objetos3D/skybox/right.jpg", "objetos3D/skybox/left.jpg",
+        "objetos3D/skybox/top.jpg",   "objetos3D/skybox/bottom.jpg",
+        "objetos3D/skybox/front.jpg", "objetos3D/skybox/back.jpg"
+    };
+    m_cubemapTexture = loadCubemap(faces);
+    // Compilar el Shader del Skybox
+    GLuint vShader = glCreateShader(GL_VERTEX_SHADER); glShaderSource(vShader, 1, &skyboxVertexShaderSrc, NULL); glCompileShader(vShader);
+    GLuint fShader = glCreateShader(GL_FRAGMENT_SHADER); glShaderSource(fShader, 1, &skyboxFragmentShaderSrc, NULL); glCompileShader(fShader);
+    m_skyboxShader = glCreateProgram(); glAttachShader(m_skyboxShader, vShader); glAttachShader(m_skyboxShader, fShader); glLinkProgram(m_skyboxShader);
 }
