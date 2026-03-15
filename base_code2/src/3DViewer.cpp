@@ -71,6 +71,8 @@ bool C3DViewer::setup() {
     // Crear la geometría de la esferita
     setupSphereBuffer();
     setupSkybox();
+    std::string miEscena = "space_station_3.obj, spaceship.obj, space_cephalopod.obj, spaceship_longford.obj, planet_of_phoenix.obj";
+    loadSceneFromString(miEscena);
     createParametricTable();
     return true;
 }
@@ -123,6 +125,46 @@ void C3DViewer::update() {
         m_lights[i].position.x = cos(time + m_lights[i].speedOffset) * m_lights[i].radius;
         m_lights[i].position.y = m_lights[i].height + sin(time * 0.5f + m_lights[i].speedOffset) * 1.5f; // Sube y baja suavemente
         m_lights[i].position.z = sin(time + m_lights[i].speedOffset) * m_lights[i].radius;
+    }
+    // ANIMACIONES MÚLTIPLES 
+    float timeObj = glfwGetTime();
+    for (auto& sub : m_subMeshes) {
+        if (sub.animType == 1) {
+            // 1: Clásico (flota y gira rápido)
+            sub.localRotation = glm::angleAxis(timeObj * 0.5f, glm::vec3(0.0f, 1.0f, 0.0f));
+            sub.localPosition.y = sub.initialPosition.y + sin(timeObj * 2.0f) * 0.5f;
+            sub.localScale = glm::vec3(1.0f + sin(timeObj * 4.0f) * 0.02f);
+        }
+        else if (sub.animType == 2) {
+            // 2: Rebote continuo
+            sub.localPosition.y = sub.initialPosition.y + abs(sin(timeObj * 3.0f)) * 3.0f;
+        }
+        else if (sub.animType == 3) {
+            // 3: Transporte 1 (Ruta: Planeta <-> Estación Derecha Lejana)
+            glm::vec3 start = glm::vec3(6.5f, 6.0f, 2.0f);   // Afuera de la atmósfera del planeta gigante
+            glm::vec3 end = glm::vec3(22.0f, 8.0f, 9.0f);  // Justo antes de chocar con la estación
+            float t = (sin(timeObj * 0.5f) + 1.0f) * 0.5f;
+            sub.localPosition = glm::mix(start, end, t);
+            sub.localRotation = glm::angleAxis(sin(timeObj * 0.5f) * 0.3f, glm::vec3(0.0f, 0.0f, 1.0f)) * glm::angleAxis(glm::radians(-45.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        }
+        else if (sub.animType == 4) {
+            // 4: Rotación Planetaria (Planeta Reflectivo)
+            sub.localRotation = glm::angleAxis(timeObj * 0.2f, glm::vec3(0.0f, 1.0f, 0.0f));
+        }
+        else if (sub.animType == 5) {
+            // 5: Gravedad Cero (Estaciones y Cefalópodo)
+            sub.localPosition.y = sub.initialPosition.y + sin(timeObj * 0.5f + sub.initialPosition.x) * 1.2f;
+            // Pequeño balanceo lateral
+            sub.localRotation = glm::angleAxis(sin(timeObj * 0.3f) * 0.1f, glm::vec3(1.0f, 0.0f, 0.0f));
+        }
+        else if (sub.animType == 6) {
+            // 6: Transporte 2 (Ruta: Planeta <-> Estación Izquierda Lejana)
+            glm::vec3 start = glm::vec3(-6.5f, 6.0f, -2.0f);
+            glm::vec3 end = glm::vec3(-22.0f, 2.0f, -9.0f);
+            float t = (sin(timeObj * 0.6f + 1.5f) + 1.0f) * 0.5f;
+            sub.localPosition = glm::mix(start, end, t);
+            sub.localRotation = glm::angleAxis(sin(timeObj * 0.6f + 1.5f) * 0.3f, glm::vec3(0.0f, 0.0f, 1.0f)) * glm::angleAxis(glm::radians(135.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        }
     }
 }
 
@@ -213,7 +255,7 @@ void C3DViewer::onCursorPos(double xpos, double ypos) {
     lastMouseY = ypos;
 }
 
-bool C3DViewer::loadOBJ(const std::string& filename) {
+bool C3DViewer::loadOBJ(const std::string& filename, bool clearScene, glm::vec3 pos, int animType) {
     std::string modelsDir = "objetos3D/";
     std::string fullPath = modelsDir + filename;
     tinyobj::attrib_t attrib;
@@ -228,11 +270,25 @@ bool C3DViewer::loadOBJ(const std::string& filename) {
         if (materials.empty()) {
             std::cout << "[AVISO] No se encontró MTL. Se usará gris por defecto." << std::endl;
         }
-    m_vertices.clear();
-    m_subMeshes.clear();
+    // Solo Limpia la primera vez
+    if (clearScene) {
+        m_vertices.clear();
+        m_subMeshes.clear();
+    }
+    // Extraer el nombre base del archivo (sin ".obj" ni rutas)
+    std::string baseName = filename;
+    size_t lastSlash = baseName.find_last_of("/\\");
+    if (lastSlash != std::string::npos) baseName = baseName.substr(lastSlash + 1);
+    size_t lastDot = baseName.find_last_of('.');
+    if (lastDot != std::string::npos) baseName = baseName.substr(0, lastDot);
+    int partCounter = 0;
+    //Submesh
     for (const auto& shape : shapes) {
         SubMesh subMesh;
-        subMesh.name = shape.name;
+        subMesh.name = baseName + "_" + std::to_string(partCounter++);
+        subMesh.initialPosition = pos;
+        subMesh.localPosition = pos;
+        subMesh.animType = animType;
         for (const auto& index : shape.mesh.indices) {
             Vertex vertex;
             //Lectura de Posicion, Normal, TexCoords, etc
@@ -272,11 +328,16 @@ bool C3DViewer::loadOBJ(const std::string& filename) {
         for (const auto& index : shape.mesh.indices) {
             Vertex vertex;
             // Posición
-            vertex.Position = {
-                attrib.vertices[3 * index.vertex_index + 0],
-                attrib.vertices[3 * index.vertex_index + 1],
-                attrib.vertices[3 * index.vertex_index + 2]
-            };
+            if (index.vertex_index >= 0 && (3 * index.vertex_index + 2) < attrib.vertices.size()) {
+                vertex.Position = {
+                    attrib.vertices[3 * index.vertex_index + 0],
+                    attrib.vertices[3 * index.vertex_index + 1],
+                    attrib.vertices[3 * index.vertex_index + 2]
+                };
+            }
+            else {
+                vertex.Position = glm::vec3(0.0f); // OBJ está roto
+            }
             // Normales
             if (index.normal_index >= 0) {
                 vertex.Normal = {
@@ -304,13 +365,15 @@ bool C3DViewer::loadOBJ(const std::string& filename) {
         subMesh.indexCount = subMesh.indices.size();
         m_subMeshes.push_back(subMesh);
     }
-    calculateBoundingBox();
-    computeNormals();
-    computeTangents();
-    createParametricTable();
-    //setupMeshBuffers();
-    updateNormalBuffers();
-    resetView();
+    if (clearScene) {
+        calculateBoundingBox();
+        computeNormals();
+        computeTangents();
+        createParametricTable();
+        //setupMeshBuffers();
+        updateNormalBuffers();
+        resetView();
+    }
     return true;
 }
 
@@ -475,7 +538,6 @@ void C3DViewer::render() {
             localModel = localModel * glm::toMat4(sub.localRotation);
             localModel = glm::scale(localModel, sub.localScale);
         }
-        localModel = glm::translate(localModel, sub.localPosition);
         glUniformMatrix4fv(glGetUniformLocation(m_shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(localModel));
         glUniform1i(glGetUniformLocation(m_shaderProgram, "uvMappingMode"), sub.uvMappingMode);
         glUniform1i(glGetUniformLocation(m_shaderProgram, "isReflective"), sub.isReflective);
@@ -578,6 +640,8 @@ void C3DViewer::drawInterface() {
     // Configuración de la Ventana Principal
     ImGui::SetNextWindowSize(ImVec2(350, 500), ImGuiCond_FirstUseEver);
     ImGui::Begin("Panel de Control - Proyecto 3 UCV");
+    // Carga Desactivada 
+    /*
     if (ImGui::CollapsingHeader("Cargar Modelo", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::InputText("Archivo (.obj)", m_objFileName, sizeof(m_objFileName));
         // Botón de Cargar
@@ -597,6 +661,7 @@ void C3DViewer::drawInterface() {
             ImGui::TextColored(ImVec4(0, 1, 0, 1), "Estado: Modelo cargado (%d partes)", (int)m_subMeshes.size());
         }
     }
+    */
     ImGui::Separator();
     //  SISTEMA Y ESTADÍSTICAS 
     ImGui::Text("Rendimiento: %.1f FPS", ImGui::GetIO().Framerate);
@@ -609,11 +674,14 @@ void C3DViewer::drawInterface() {
         if (ImGui::Button("CENTRAR VISTA Y OBJETO")) {
             resetView();
         }
+        //Centrar no Necesario
+        /*
         if (ImGui::Button("Centrar Objeto en (0,0,-3)")) {
             m_globalPos = glm::vec3(0.0f, 0.0f, -3.0f);
             m_globalRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
             m_globalScale = glm::vec3(1.0f);
         }
+        */
         /*
         ImGui::Separator();
         static char exportName[128] = "modelo_exportado.obj";
@@ -722,15 +790,18 @@ void C3DViewer::drawInterface() {
                 ImGui::SameLine();
                 ImGui::ColorEdit3("Color BB", glm::value_ptr(m_boundingBoxColor), ImGuiColorEditFlags_NoInputs);
             }
+            /*
             ImGui::Separator();
             // Botón rojo para indicar acción destructiva
             ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0.0f, 0.6f, 0.6f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0.0f, 0.7f, 0.7f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0.0f, 0.8f, 0.8f));
-            if (ImGui::Button("ELIMINAR SUB-MALLADO", ImVec2(-1, 0))) { 
+            
+            if (ImGui::Button("ELIMINAR SUB-MALLADO", ImVec2(-1, 0))) {
                 sub.visible = false;         
                 m_selectedSubMeshIndex = -1;
             }
+            */
             //Control de Bump
             ImGui::Separator();
             ImGui::Text("Texturas Personalizadas (Punto B)");
@@ -745,7 +816,6 @@ void C3DViewer::drawInterface() {
                 std::string full = "objetos3D/" + std::string(m_texBumpInput);
                 sub.bumpMap = loadTexture(full.c_str());
             }
-            ImGui::PopStyleColor(3);
         }
         else {
             ImGui::TextWrapped("Haz Clic Izquierdo sobre el objeto 3D para seleccionar una parte y editarla.");
@@ -1111,6 +1181,7 @@ void C3DViewer::createParametricTable() {
     tableMesh.diffuseMap = loadTexture(diffPath.c_str());
     tableMesh.bumpMap = loadTexture(bumpPath.c_str());
     tableMesh.indexCount = tableMesh.indices.size();
+    tableMesh.animType = 0;
     m_subMeshes.push_back(tableMesh);
     // Recargar buffers a la GPU
     setupMeshBuffers();
@@ -1208,4 +1279,54 @@ void C3DViewer::setupSkybox() {
     GLuint vShader = glCreateShader(GL_VERTEX_SHADER); glShaderSource(vShader, 1, &skyboxVertexShaderSrc, NULL); glCompileShader(vShader);
     GLuint fShader = glCreateShader(GL_FRAGMENT_SHADER); glShaderSource(fShader, 1, &skyboxFragmentShaderSrc, NULL); glCompileShader(fShader);
     m_skyboxShader = glCreateProgram(); glAttachShader(m_skyboxShader, vShader); glAttachShader(m_skyboxShader, fShader); glLinkProgram(m_skyboxShader);
+}
+void C3DViewer::loadSceneFromString(const std::string& objList) {
+    m_vertices.clear();
+    m_subMeshes.clear();
+    std::stringstream ss(objList);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        item.erase(0, item.find_first_not_of(" \t"));
+        item.erase(item.find_last_not_of(" \t") + 1);
+        if (item.empty()) continue;
+        glm::vec3 pos(0.0f);
+        glm::vec3 customScale(1.0f); //Control manual de tamaño
+        int anim = 1;
+        bool isMetal = false;
+        size_t startMeshCount = m_subMeshes.size();
+        if (item.find("planet") != std::string::npos) {
+            pos = glm::vec3(0.0f, 6.0f, 0.0f); // Más alto para dominar la escena
+            customScale = glm::vec3(4.5f);     // Planeta 4.5 veces más grande
+            anim = 4;
+            isMetal = true;
+        }
+        else if (item.find("space_station") != std::string::npos || item.find("cephalopod") != std::string::npos) {
+            static int stationCount = 0;
+            // Estaciones súper lejos a los extremos (-25 y 25)
+            pos = (stationCount % 2 == 0) ? glm::vec3(-25.0f, 2.0f, -10.0f) : glm::vec3(25.0f, 8.0f, 10.0f);
+            customScale = glm::vec3(2.5f); // Estaciones masivas
+            anim = 5;
+            stationCount++;
+        }
+        else if (item.find("spaceship") != std::string::npos) {
+            static int shipCount = 0;
+            pos = glm::vec3(0.0f);
+            customScale = glm::vec3(1.2f); // Naves un poco más grandes para que se noten
+            anim = (shipCount % 2 == 0) ? 3 : 6;
+            shipCount++;
+        }
+        loadOBJ(item, false, pos, anim);
+        // Aplicamos la reflectividad y el TAMAÑO a las partes recién cargadas
+        for (size_t i = startMeshCount; i < m_subMeshes.size(); i++) {
+            m_subMeshes[i].isReflective = isMetal;
+            m_subMeshes[i].localScale = customScale; 
+        }
+    }
+    calculateBoundingBox();
+    computeNormals();
+    computeTangents();
+    createParametricTable();
+    updateNormalBuffers();
+    resetView();
+    std::cout << "Escena espacial masiva cargada con exito." << std::endl;
 }

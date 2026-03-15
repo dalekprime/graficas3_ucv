@@ -30,9 +30,11 @@ struct SubMesh {
     unsigned int indexCount = 0;
     glm::vec3 diffuseColor = glm::vec3(0.7f);
     // TRANSFORMACIONES LOCALES
+    glm::vec3 initialPosition = glm::vec3(0.0f);
     glm::vec3 localPosition = glm::vec3(0.0f);
     glm::vec3 localScale = glm::vec3(1.0f);
     glm::quat localRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    int animType = 0;
     bool visible = true;
     glm::vec3 min = glm::vec3(FLT_MAX);
     glm::vec3 max = glm::vec3(-FLT_MAX);
@@ -67,7 +69,8 @@ private:
     void resize(int new_width, int new_height);
     bool setupShader();
     bool checkCompileErrors(GLuint shader, const char* type);
-    bool loadOBJ(const std::string& path);
+    bool loadOBJ(const std::string& path, bool clearScene = true, glm::vec3 pos = glm::vec3(0.0f), int animType = 1);
+    void loadSceneFromString(const std::string& objList);
     void calculateBoundingBox();
     void computeNormals(); 
     void setupMeshBuffers();
@@ -197,10 +200,16 @@ protected:
             vec3 specular; 
             int shadingModel; 
         };
-        uniform Light lights[3]; uniform vec3 viewPos; uniform vec3 uColor; 
-        uniform bool useFlatColor; uniform bool useAttenuation; uniform bool isPicking;
-        uniform sampler2D mapDiffuse; uniform sampler2D mapSpecular; 
-        uniform sampler2D mapAmbient; uniform sampler2D mapBump;
+        uniform Light lights[3]; 
+        uniform vec3 viewPos; 
+        uniform vec3 uColor; 
+        uniform bool useFlatColor; 
+        uniform bool useAttenuation; 
+        uniform bool isPicking;
+        uniform sampler2D mapDiffuse; 
+        uniform sampler2D mapSpecular; 
+        uniform sampler2D mapAmbient; 
+        uniform sampler2D mapBump;
         uniform samplerCube skybox; // El mapa del entorno para el reflejo
         uniform bool hasMapDiffuse; uniform bool hasMapSpecular; 
         uniform bool hasMapAmbient; uniform bool hasMapBump;
@@ -210,6 +219,7 @@ protected:
         void main() {
             if (isPicking || useFlatColor) { FragColor = vec4(uColor, 1.0); return; }
             vec3 result = vec3(0.0);
+            vec3 totalSpecular = vec3(0.0);
             vec3 viewDir = normalize(viewPos - vFragPos);
             vec2 finalUV = vTexCoords;
             if (uvMappingMode == 1) { 
@@ -239,28 +249,31 @@ protected:
             }
             for(int i = 0; i < 3; i++) {
                 if(!lights[i].enabled) continue;
+                vec3 currentNorm = norm; 
                 if (lights[i].shadingModel == 2) { 
-                    norm = normalize(cross(dFdx(vFragPos), dFdy(vFragPos)));
+                    currentNorm = normalize(cross(dFdx(vFragPos), dFdy(vFragPos)));
                 }
                 vec3 lightDir = normalize(lights[i].position - vFragPos);
                 vec3 ambient = lights[i].ambient * texAmbient;
-                float diff = max(dot(norm, lightDir), 0.0);
+                // Usar currentNorm aquí en adelante
+                float diff = max(dot(currentNorm, lightDir), 0.0);
                 vec3 diffuse = lights[i].diffuse * diff * texDiffuse;
                 float spec = 0.0;
                 if (lights[i].shadingModel == 1) { 
-                    spec = pow(max(dot(norm, normalize(lightDir + viewDir)), 0.0), 32.0);
+                    spec = pow(max(dot(currentNorm, normalize(lightDir + viewDir)), 0.0), 32.0);
                 } else { 
-                    spec = pow(max(dot(viewDir, reflect(-lightDir, norm)), 0.0), 32.0);
+                    spec = pow(max(dot(viewDir, reflect(-lightDir, currentNorm)), 0.0), 32.0);
                 }
                 vec3 specular = lights[i].specular * spec * texSpecular; 
                 float dist = length(lights[i].position - vFragPos);
                 float att = useAttenuation ? 1.0 / (1.0 + 0.09 * dist + 0.032 * (dist * dist)) : 1.0;
                 result += (ambient + diffuse + specular) * att;
+                totalSpecular += specular * att;
             }
             if (isReflective) {
                 vec3 R = reflect(-viewDir, normalize(vNormal));
                 vec3 reflection = texture(skybox, R).rgb;
-                result = mix(result, reflection * vec3(1.0, 0.7, 0.3), 0.6); 
+                result = (reflection * vec3(1.0, 0.75, 0.4)) + totalSpecular; 
             }
             FragColor = vec4(result, 1.0);
         }
